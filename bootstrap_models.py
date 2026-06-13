@@ -21,6 +21,9 @@ WHISPER_REPOS = {
     "small.en":  "Systran/faster-whisper-small.en",
     "medium.en": "Systran/faster-whisper-medium.en",
     "large-v3":  "Systran/faster-whisper-large-v3",
+    # Distilled large: ~large-v2 accuracy at a fraction of the compute —
+    # the recommended whisper_model_final for the two-pass RX pipeline.
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
 }
 
 

@@ -169,6 +169,11 @@ _tts_event_queue: asyncio.Queue = asyncio.Queue()
 # Background tasks — kept alive so they are not GC'd mid-run
 _background_tasks: set[asyncio.Task] = set()
 
+# Whisper variants the config UI may select; must match bootstrap_models.py.
+VALID_WHISPER_MODELS = {
+    "tiny.en", "base.en", "small.en", "medium.en", "large-v3", "distil-large-v3",
+}
+
 # Signal-quality state — written by STT worker callbacks (GIL-safe int/bool assignments)
 _audio_level: int = 0
 _radio_error: bool = False
@@ -359,6 +364,8 @@ def _make_stt_worker() -> STTWorker:
         squelch_adaptive=_config.squelch_adaptive,
         pre_roll_s=_config.stt_pre_roll_s,
         min_speech_s=_config.stt_min_speech_s,
+        whisper_model_final=_config.whisper_model_final,
+        final_max_s=_config.stt_final_max_s,
         on_audio_level=_on_stt_audio_level,
         on_audio_chunk=_audio_chunk_fanout,
         on_capture_event=_on_stt_capture_event,
@@ -438,6 +445,17 @@ async def _synthesize_rx_audio(text: str) -> None:
             await _manager.send_to(ws, msg)
 
 
+def _resolve_final_text(prior: str, chunk_text: str, replace: bool) -> str:
+    """Final transcript for an utterance. A replacing final (second-pass
+    full-utterance re-transcription) supersedes the accumulated partials;
+    a plain final covers only the tail audio after the last partial cut, so
+    the partial text is prepended. An empty replace falls back to the
+    partials — a failed final pass must never erase the transcript."""
+    if replace and chunk_text:
+        return chunk_text
+    return (prior + " " + chunk_text).strip() if prior else chunk_text
+
+
 async def _rx_pump() -> None:
     """Drain the STT output queue and broadcast rx_message frames."""
     global _vad_active
@@ -458,10 +476,8 @@ async def _rx_pump() -> None:
                 raw_text = (prior + " " + chunk_text).strip() if prior else chunk_text
                 _utterance_partial_texts[utterance_id] = raw_text
             else:
-                # Final covers only the tail audio after the last partial cut.
-                # Prepend accumulated partial text so the full utterance is preserved.
                 prior = _utterance_partial_texts.pop(utterance_id, "")
-                raw_text = (prior + " " + chunk_text).strip() if prior else chunk_text
+                raw_text = _resolve_final_text(prior, chunk_text, result.get("replace", False))
 
             filtered_text = mask_profanity(raw_text)
 
@@ -1304,9 +1320,15 @@ async def _ws_handle_set_server_config(ws: WebSocket, data: dict, state: "Connec
 
     if "whisper_model" in data:
         model = str(data["whisper_model"]).strip()
-        valid = {"tiny.en", "base.en", "small.en", "medium.en", "large-v3"}
-        if model in valid and model != _config.whisper_model:
+        if model in VALID_WHISPER_MODELS and model != _config.whisper_model:
             _config["whisper_model"] = model
+            stt_restart_needed = True
+
+    if "whisper_model_final" in data:
+        model = str(data["whisper_model_final"]).strip()
+        # Empty string disables the second pass.
+        if (model == "" or model in VALID_WHISPER_MODELS) and model != _config.whisper_model_final:
+            _config["whisper_model_final"] = model
             stt_restart_needed = True
 
     if "stt_debug_capture" in data:
