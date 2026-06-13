@@ -87,9 +87,15 @@ class UtteranceDebugRecorder:
                 self._pending = rec
                 self._pending_active = True
                 # Records that never finalized (e.g. TX pause mid-utterance)
-                # would otherwise accumulate forever.
+                # would otherwise accumulate forever. Log on eviction so a
+                # missing capture isn't a silent mystery later.
                 while len(self._records) > 16:
-                    self._records.pop(next(iter(self._records)))
+                    stale_uid = next(iter(self._records))
+                    self._records.pop(stale_uid)
+                    _log.warning(
+                        "debug_capture: evicting stale unfinalized record uid=%s "
+                        "(never finalized — capture discarded)", stale_uid
+                    )
             elif event == "vad_end":
                 # Keep _pending: the final segment arrives after this event
                 # (same feed() call, events are processed first) and still

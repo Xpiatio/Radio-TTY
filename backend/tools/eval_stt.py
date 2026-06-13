@@ -63,6 +63,7 @@ def run_pipeline(audio: np.ndarray, cfg: EvalPipelineConfig, transcriber, vad_it
     """
     sr = cfg.sample_rate
     chunk_n = cfg.chunk_samples
+    to_chunks = lambda seconds: int(seconds * sr / chunk_n)
     squelch = SquelchDetector(
         open_threshold=cfg.squelch_open_threshold,
         open_hold_chunks=STTWorker.SQUELCH_OPEN_HOLD_CHUNKS,
@@ -73,12 +74,12 @@ def run_pipeline(audio: np.ndarray, cfg: EvalPipelineConfig, transcriber, vad_it
         vad_iter,
         squelch,
         sample_rate=sr,
-        rolling_target_chunks=int(cfg.rolling_segment_s * sr / chunk_n),
-        cut_window_chunks=int(cfg.cut_window_s * sr / chunk_n),
-        pre_buffer_chunks=max(1, int(cfg.pre_roll_s * sr / chunk_n)),
+        rolling_target_chunks=to_chunks(cfg.rolling_segment_s),
+        cut_window_chunks=to_chunks(cfg.cut_window_s),
+        pre_buffer_chunks=max(1, to_chunks(cfg.pre_roll_s)),
         squelch_buffer_max_chunks=STTWorker.SQUELCH_BUFFER_MAX_CHUNKS,
         min_speech_duration_s=cfg.min_speech_s,
-        silence_reset_chunks=int(STTWorker.SILENCE_RESET_S * sr / chunk_n),
+        silence_reset_chunks=to_chunks(STTWorker.SILENCE_RESET_S),
     )
     bandpass_sos = make_bandpass_sos(sr, STTWorker.BANDPASS_LOW_HZ, STTWorker.BANDPASS_HIGH_HZ)
     lowpass_sos = make_lowpass_sos(sr, cutoff_hz=2700) if cfg.lowpass_enabled else None

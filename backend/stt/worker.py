@@ -416,7 +416,7 @@ class STTWorker:
                     meta={
                         "whisper_model": self.whisper_model_name,
                         "vad_threshold": self.vad_threshold,
-                        "squelch_open_threshold": self.SQUELCH_OPEN_THRESHOLD,
+                        "squelch_open_threshold": self.squelch_open_threshold,
                     },
                 )
             except Exception as e:
