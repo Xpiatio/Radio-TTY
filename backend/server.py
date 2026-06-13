@@ -1190,6 +1190,7 @@ async def _lifespan(app: FastAPI):
         out_queue=_tts_event_queue,
         compute_backend=compute,
         output_device=_config.output_device if _config.output_device != -1 else None,
+        tx_conditioning=_config.tx_conditioning,
     )
 
     _background_tasks = {
@@ -1330,6 +1331,12 @@ async def _ws_handle_set_server_config(ws: WebSocket, data: dict, state: "Connec
         if (model == "" or model in VALID_WHISPER_MODELS) and model != _config.whisper_model_final:
             _config["whisper_model_final"] = model
             stt_restart_needed = True
+
+    if "tx_conditioning" in data:
+        enabled = bool(data["tx_conditioning"])
+        _config["tx_conditioning"] = enabled
+        if _synthesizer is not None:
+            _synthesizer.tx_conditioning = enabled
 
     if "stt_debug_capture" in data:
         enabled = bool(data["stt_debug_capture"])
