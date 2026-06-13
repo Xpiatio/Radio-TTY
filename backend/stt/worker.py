@@ -34,9 +34,10 @@ import numpy as np
 _log = logging.getLogger(__name__)
 
 from backend.audio.capture import open_input_source
-from backend.audio.dsp import bandpass, denoise, dynamic_agc, lowpass, make_bandpass_sos, make_lowpass_sos
+from backend.audio.dsp import lowpass, make_bandpass_sos, make_lowpass_sos
 from backend.audio.squelch import SquelchDetector
 from backend.audio.vad import load_vad_model, make_vad_iterator
+from backend.stt.preprocess import preprocess_segment
 from backend.stt.segmenter import SpeechSegmenter
 from backend.stt.transcriber import WhisperTranscriber
 
@@ -102,6 +103,8 @@ class STTWorker:
         system_monitor_sink: str = "",
         rx_mode: str = "voice",
         saved_phrases: "list[str] | tuple" = (),
+        debug_capture: bool = False,
+        debug_dir: str = "",
         # Optional event callbacks — all called from the worker thread;
         # implementations must be thread-safe (e.g. loop.call_soon_threadsafe).
         on_audio_level: "Callable[[int], None] | None" = None,
@@ -118,6 +121,9 @@ class STTWorker:
         self.vad_threshold = float(vad_threshold)
         self.rx_mode = rx_mode
         self.saved_phrases: list[str] = list(saved_phrases)
+        self.debug_capture = bool(debug_capture)
+        self.debug_dir = debug_dir or ""
+        self._debug_recorder = None
         self._model_cache: ModelCache | None = model_cache
 
         self._on_audio_level = on_audio_level
@@ -342,6 +348,24 @@ class STTWorker:
         )
         was_paused = False
 
+        if self.debug_capture and self.debug_dir:
+            try:
+                from backend.stt.debug_capture import UtteranceDebugRecorder
+                self._debug_recorder = UtteranceDebugRecorder(
+                    self.debug_dir,
+                    sample_rate=self.SAMPLE_RATE,
+                    pre_roll_chunks=self.PRE_BUFFER_CHUNKS,
+                    meta={
+                        "whisper_model": self.whisper_model_name,
+                        "vad_threshold": self.vad_threshold,
+                        "squelch_open_threshold": self.SQUELCH_OPEN_THRESHOLD,
+                    },
+                )
+            except Exception as e:
+                _log.warning("Debug capture disabled (init failed): %s", e)
+                self._debug_recorder = None
+        recorder = self._debug_recorder
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -380,11 +404,17 @@ class STTWorker:
                     self._emit_status("Listening...")
                     was_paused = False
 
+                if recorder is not None:
+                    recorder.feed_raw(np.asarray(chunk, dtype=np.float32))
                 segments, events = segmenter.feed(chunk_for_vad, peak)
                 for event in events:
                     self._apply_squelch_event(event)
                     self._emit_capture_event(event)
+                    if recorder is not None:
+                        recorder.on_capture_event(event)
                 for uid, audio, is_final in segments:
+                    if recorder is not None:
+                        recorder.on_segment(uid, audio, is_final)
                     transcribe_queue.put((uid, audio, is_final))
         finally:
             try:
@@ -503,12 +533,18 @@ class STTWorker:
             if job is None:
                 break
             uid, audio, is_final = job
+            recorder = self._debug_recorder
             try:
-                filtered = bandpass(audio, bandpass_sos)
-                denoised = denoise(filtered, self.SAMPLE_RATE, prop_decrease=0.7)
-                agc_audio = dynamic_agc(denoised, self.SAMPLE_RATE)
-                text = transcriber.transcribe(agc_audio)
+                processed = preprocess_segment(audio, self.SAMPLE_RATE, bandpass_sos)
+                if recorder is not None:
+                    recorder.on_processed(uid, processed)
+                text = transcriber.transcribe(processed)
                 if text:
+                    if recorder is not None:
+                        recorder.on_transcript(uid, text, partial=not is_final)
                     self._emit_result(uid, text, not is_final)
             except Exception as e:
                 self._emit_error(f"Transcription error: {e}")
+            finally:
+                if recorder is not None and is_final:
+                    recorder.finalize(uid)
